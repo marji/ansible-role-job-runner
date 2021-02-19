@@ -1,0 +1,7 @@
+---
+- hosts: localhost
+  remote_user: root
+  roles:
+    - ansible-role-job-runner
+  # - { role: 'ansible-role-job-runner', runner_gid: 992 }
+

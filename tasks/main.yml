@@ -1,0 +1,31 @@
+---
+# tasks file for ansible-role-job-runner
+
+- name: Add runner group
+  group:
+    name: "{{ runner_group }}"
+    state: 'present'
+    gid: "{{ runner_gid | default(omit) }}"
+  when: runner_group is defined
+
+- name: Add runner user
+  user:
+    name: "{{ runner_user }}"
+    state: 'present'
+    uid: "{{ runner_id | default(omit) }}"
+    group: "{{ runner_group }}"
+    shell: '/bin/false'
+    create_home: no
+    home: '/nonexistent'
+  when: runner_user is defined
+
+- name: Ensure directory for job-runner script exists
+  file:
+    path: "{{ runner_script_path | dirname }}"
+    state: directory
+
+- template:
+    src: job_runner.erb
+    dest: "{{ runner_script_path }}"
+    owner: 'root'
+    mode: 0555

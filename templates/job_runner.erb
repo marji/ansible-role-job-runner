@@ -1,0 +1,119 @@
+#!/bin/bash
+
+# A job runner, it executes the job and produces prometheus metrics about the job.
+# That means the jobs can be monitored by prometheus with a minimal effort.
+# It requires node_exporter to be installed, and its textfile collector configured.
+# It can be used to execute cron tasks and get prometheus to monitor them.
+#
+# This script runs as $runner_user, this user needs to have write
+# access to the node_exporter's $textfile_dir directory.
+
+
+# "constant" variables:
+runner_user="${RUNNER_USER:-{{ runner_user }}}"
+script_dir="${RUNNER_SCRIPT_PATH:-{{ runner_scripts_dir }}}"
+textfile_dir="${TEXTFILE_DIR:-{{ textfile_dir }}}"
+
+
+# Verify we run as the dedicated runner user:
+if [ "$(whoami)" != "${runner_user}" ] ; then
+  echo "Please run as the $runner_user user. Exiting."
+  exit 1
+fi
+
+start="$(date +%s)"
+
+### read and validate parameters
+
+job="$1"
+log_prefix="$2"
+next_run_in="$3"
+shift; shift; shift
+
+if [[ -z "$job" || -z "$log_prefix" || -z "$next_run_in" ]] ; then
+  echo "ERROR: Missing arguments."
+  echo "usage: $0 [job_name] [log_prefix] [next_run_in_seconds] [JOB_PARAMETERS]"
+  exit 1
+fi
+
+# validate $log_prefix (used as tag for 'logger')
+log_prefix_regex='^[a-zA-Z][-0-9a-zA-Z]*[0-9a-zA-Z]$'
+# We could loosen it up
+if ! [[ "$log_prefix" =~ $log_prefix_regex ]] ; then
+  echo "ERROR: log_prefix is not valid. Aborting."
+  exit 1
+fi
+
+# validate job name
+job_name_regex='^[a-zA-Z][-_.0-9a-zA-Z]*[0-9a-zA-Z]$'
+# start with a letter
+# zero-to-many of: - or _ or . or digit or letter
+# finish with a digit or letter
+#
+if [[ ! $job =~ $job_name_regex ]]; then
+  echo "ERROR: Job name is not valid. Aborting." \
+    | logger -t "$log_prefix"
+  exit 1
+fi
+
+# validate $next_run_in (time period in seconds)
+if ! [[ "$next_run_in" =~ ^[0-9]+$ ]] ; then
+  echo "ERROR: Time period is not valid. Aborting." \
+    | logger -t "$log_prefix"
+  exit 1
+fi
+
+script="$script_dir/$job"
+
+if [ ! -x "$script" ]; then
+  echo "ERROR: Can't find script for '$job'. Aborting." \
+    | logger -t "$log_prefix"
+  exit 1
+fi
+
+
+# Lock
+exec 8>/tmp/.lock.$job
+if ! flock -n 8  ; then
+  echo "Another instance of this script is running. Aborting." \
+    | logger -t "$log_prefix"
+  exit 1
+fi
+# this now runs under the lock until 8 is closed (it will be closed automatically when the script ends)
+
+
+# prometheus textfile collector file:
+runner_prom_file="${textfile_dir}/runner_${job}.prom"
+tmp_runner_prom_file="${runner_prom_file}.$$"
+
+if ! touch "${tmp_runner_prom_file}" 2>/dev/null ; then
+  echo "Cannot create metric file. Aborting." \
+    | logger -t "$log_prefix"
+  exit 1
+fi
+
+
+# Execute the script, redirect its output to syslog:
+"$script" "$@" 2>&1 | logger -t "$log_prefix"
+
+runner_exit=${PIPESTATUS[0]}
+finish="$(date +%s)"
+duration=$(( finish - start ))
+
+cat << EOF > "${tmp_runner_prom_file}"
+# HELP runner_exit Exit code of runner.
+# TYPE runner_exit gauge
+runner_exit{script="$job"} $runner_exit
+# HELP runner_last Time latest run finished.
+# TYPE runner_last gauge
+runner_last{script="$job"} $finish
+# HELP runner_duration Duration of latest run.
+# TYPE runner_duration gauge
+runner_duration{script="$job"} $duration
+# HELP runner_next_run_in Expect another run within this time period.
+# TYPE runner_next_run_in gauge
+runner_alert_after{script="$job"} $next_run_in
+EOF
+
+# atomic file rename to avoid race conditions:
+mv -f "${tmp_runner_prom_file}" "${runner_prom_file}"

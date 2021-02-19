@@ -1,0 +1,10 @@
+---
+# defaults file for ansible-role-job-runner
+
+runner_script_path: '/opt/bin/job-runner'
+runner_user:        'jobrunner'
+runner_group:       'jobrunner'
+runner_id:          990
+runner_gid:         990
+runner_scripts_dir: '/opt/scripts'
+textfile_dir:       '/srv/node_exporter/textfile_collector'
